@@ -1,0 +1,14 @@
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/thiserror-7c3515ee52810c6a.d: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/thiserror-f90d22db63854158/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libthiserror-7c3515ee52810c6a.rlib: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/thiserror-f90d22db63854158/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libthiserror-7c3515ee52810c6a.rmeta: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/thiserror-f90d22db63854158/out/private.rs
+
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs:
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/thiserror-f90d22db63854158/out/private.rs:
+
+# env-dep:OUT_DIR=/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/thiserror-f90d22db63854158/out

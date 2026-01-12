@@ -1,0 +1,14 @@
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/ref_cast-91f55fdd067e3281.d: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/custom.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/layout.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/trivial.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/ref-cast-145833a0fda1ab2f/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libref_cast-91f55fdd067e3281.rlib: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/custom.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/layout.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/trivial.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/ref-cast-145833a0fda1ab2f/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libref_cast-91f55fdd067e3281.rmeta: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/custom.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/layout.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/trivial.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/private.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/ref-cast-145833a0fda1ab2f/out/private.rs
+
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/lib.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/custom.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/layout.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/trivial.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25/src/private.rs:
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/ref-cast-145833a0fda1ab2f/out/private.rs:
+
+# env-dep:OUT_DIR=/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/ref-cast-145833a0fda1ab2f/out

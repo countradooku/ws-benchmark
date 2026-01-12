@@ -1,0 +1,14 @@
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/serde-e05616b59d406b00.d: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/serde-18f4f6bc1434fcdf/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libserde-e05616b59d406b00.rlib: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/serde-18f4f6bc1434fcdf/out/private.rs
+
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/deps/libserde-e05616b59d406b00.rmeta: /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/serde-18f4f6bc1434fcdf/out/private.rs
+
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/radud/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/serde-18f4f6bc1434fcdf/out/private.rs:
+
+# env-dep:OUT_DIR=/home/radud/Desktop/Code/Rust/sockudo-cendars/benchmarks/ws-benchmark/target/release/build/serde-18f4f6bc1434fcdf/out
