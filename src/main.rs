@@ -1,15 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
-use rand::prelude::{IndexedRandom, SliceRandom};
+use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use sonic_rs::JsonValueTrait;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 use tokio::time::{interval, sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
@@ -50,7 +50,7 @@ struct Config {
     #[arg(long, env = "FILTER_UPDATE_INTERVAL", default_value = "5000")]
     filter_update_interval: u64,
 
-    /// Target number of clients (1000, 5000, or 10000)
+    /// Target number of clients
     #[arg(long, env = "NUM_CLIENTS", default_value = "1000")]
     num_clients: usize,
 
@@ -65,6 +65,10 @@ struct Config {
     /// Duration to ramp down in seconds
     #[arg(long, env = "RAMP_DOWN_DURATION", default_value = "10")]
     ramp_down_duration: u64,
+
+    /// Client ID offset for multi-machine benchmarking
+    #[arg(long, env = "CLIENT_ID_OFFSET", default_value = "0")]
+    client_id_offset: usize,
 }
 
 // =============================================================================
@@ -116,114 +120,53 @@ struct PongMessage {
 }
 
 // =============================================================================
-// Metrics
+// Per-Client Results (Lock-Free)
+// =============================================================================
+
+struct ClientResult {
+    subscribe_latency_ms: Option<u64>,
+    filter_update_latencies: Vec<u64>,
+    e2e_latencies: Vec<u64>,
+    messages_received: u64,
+    connected: bool,
+    subscribe_success: bool,
+    connection_error: bool,
+}
+
+impl ClientResult {
+    fn new() -> Self {
+        Self {
+            subscribe_latency_ms: None,
+            filter_update_latencies: Vec::with_capacity(64),
+            e2e_latencies: Vec::with_capacity(10000),
+            messages_received: 0,
+            connected: false,
+            subscribe_success: false,
+            connection_error: false,
+        }
+    }
+}
+
+// =============================================================================
+// Global Atomic Counters (for live stats only)
 // =============================================================================
 
 #[derive(Clone)]
-struct Metrics {
-    subscribe_latency: Arc<Mutex<Histogram<u64>>>,
-    filter_update_latency: Arc<Mutex<Histogram<u64>>>,
-    e2e_latency: Arc<Mutex<Histogram<u64>>>,
+struct LiveStats {
+    active_connections: Arc<AtomicUsize>,
     messages_received: Arc<AtomicU64>,
     subscribe_success: Arc<AtomicU64>,
-    subscribe_failed: Arc<AtomicU64>,
-    filter_updates: Arc<AtomicU64>,
     connection_errors: Arc<AtomicU64>,
-    active_connections: Arc<AtomicUsize>,
 }
 
-impl Metrics {
+impl LiveStats {
     fn new() -> Self {
         Self {
-            subscribe_latency: Arc::new(Mutex::new(
-                Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap(),
-            )),
-            filter_update_latency: Arc::new(Mutex::new(
-                Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap(),
-            )),
-            e2e_latency: Arc::new(Mutex::new(
-                Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap(),
-            )),
+            active_connections: Arc::new(AtomicUsize::new(0)),
             messages_received: Arc::new(AtomicU64::new(0)),
             subscribe_success: Arc::new(AtomicU64::new(0)),
-            subscribe_failed: Arc::new(AtomicU64::new(0)),
-            filter_updates: Arc::new(AtomicU64::new(0)),
             connection_errors: Arc::new(AtomicU64::new(0)),
-            active_connections: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    async fn print_summary(&self) {
-        info!("╔════════════════════════════════════════════════════════════╗");
-        info!("║                    BENCHMARK SUMMARY                       ║");
-        info!("╚════════════════════════════════════════════════════════════╝");
-
-        let sub_hist = self.subscribe_latency.lock().await;
-        let filter_hist = self.filter_update_latency.lock().await;
-        let e2e_hist = self.e2e_latency.lock().await;
-
-        info!("");
-        info!("Connection Metrics:");
-        info!(
-            "  Subscribe Success:   {}",
-            self.subscribe_success.load(Ordering::Relaxed)
-        );
-        info!(
-            "  Subscribe Failed:    {}",
-            self.subscribe_failed.load(Ordering::Relaxed)
-        );
-        info!(
-            "  Connection Errors:   {}",
-            self.connection_errors.load(Ordering::Relaxed)
-        );
-        info!(
-            "  Filter Updates:      {}",
-            self.filter_updates.load(Ordering::Relaxed)
-        );
-        info!(
-            "  Messages Received:   {}",
-            self.messages_received.load(Ordering::Relaxed)
-        );
-
-        info!("");
-        info!("Subscribe Latency (ms):");
-        if sub_hist.len() > 0 {
-            info!("  Min:    {:.2}", sub_hist.min());
-            info!("  Mean:   {:.2}", sub_hist.mean());
-            info!("  p50:    {:.2}", sub_hist.value_at_quantile(0.50));
-            info!("  p95:    {:.2}", sub_hist.value_at_quantile(0.95));
-            info!("  p99:    {:.2}", sub_hist.value_at_quantile(0.99));
-            info!("  Max:    {:.2}", sub_hist.max());
-        } else {
-            info!("  No data");
-        }
-
-        if filter_hist.len() > 0 {
-            info!("");
-            info!("Filter Update Latency (ms):");
-            info!("  Min:    {:.2}", filter_hist.min());
-            info!("  Mean:   {:.2}", filter_hist.mean());
-            info!("  p50:    {:.2}", filter_hist.value_at_quantile(0.50));
-            info!("  p95:    {:.2}", filter_hist.value_at_quantile(0.95));
-            info!("  p99:    {:.2}", filter_hist.value_at_quantile(0.99));
-            info!("  Max:    {:.2}", filter_hist.max());
-        }
-
-        info!("");
-        info!("End-to-End Latency (ms):");
-        if e2e_hist.len() > 0 {
-            info!("  Min:    {:.2}", e2e_hist.min());
-            info!("  Mean:   {:.2}", e2e_hist.mean());
-            info!("  p50:    {:.2}", e2e_hist.value_at_quantile(0.50));
-            info!("  p95:    {:.2}", e2e_hist.value_at_quantile(0.95));
-            info!("  p99:    {:.2}", e2e_hist.value_at_quantile(0.99));
-            info!("  Max:    {:.2}", e2e_hist.max());
-        } else {
-            info!("  No data");
-        }
-
-        info!("");
-        info!("═══════════════════════════════════════════════════════════");
     }
 }
 
@@ -238,23 +181,16 @@ struct TokenPool {
 
 impl TokenPool {
     fn load_from_file(path: &PathBuf) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .context(format!("Failed to read token file: {:?}", path))?;
-
-        let addresses: Vec<String> =
-            sonic_rs::from_str(&content).context("Failed to parse token addresses JSON")?;
-
-        info!("Loaded {} token addresses from {:?}", addresses.len(), path);
-
+        let content = std::fs::read_to_string(path)?;
+        let addresses: Vec<String> = sonic_rs::from_str(&content)?;
+        info!("Loaded {} token addresses", addresses.len());
         Ok(Self {
             addresses: Arc::new(addresses),
         })
     }
 
     fn generate_fake(count: usize) -> Self {
-        warn!("Generating {} fake token addresses", count);
-        let addresses: Vec<String> = (0..count).map(|i| format!("0x{:040x}", i)).collect();
-
+        let addresses: Vec<String> = (0..count).map(|i| format!("token_{:08x}", i)).collect();
         Self {
             addresses: Arc::new(addresses),
         }
@@ -262,21 +198,18 @@ impl TokenPool {
 
     fn get_random(&self) -> String {
         let mut rng = rand::rng();
-        self.addresses[..].choose(&mut rng).unwrap().clone()
+        self.addresses.choose(&mut rng).unwrap().clone()
     }
 
     fn get_random_unique(&self, count: usize) -> Vec<String> {
         let mut rng = rand::rng();
-        let max_count = self.addresses.len().min(count);
-
-        let mut indices: Vec<usize> = (0..self.addresses.len()).collect();
-        indices.shuffle(&mut rng);
-
-        indices
-            .into_iter()
-            .take(max_count)
-            .map(|i| self.addresses[i].clone())
-            .collect()
+        let count = count.min(self.addresses.len());
+        let indices: Vec<usize> = (0..self.addresses.len())
+            .collect::<Vec<_>>()
+            .choose_multiple(&mut rng, count)
+            .copied()
+            .collect();
+        indices.iter().map(|&i| self.addresses[i].clone()).collect()
     }
 }
 
@@ -284,6 +217,7 @@ impl TokenPool {
 // Filter Building
 // =============================================================================
 
+#[inline]
 fn build_filter(scenario: u8, tokens: &TokenPool) -> FilterValue {
     match scenario {
         1 => FilterValue::Single {
@@ -320,16 +254,67 @@ fn build_filter(scenario: u8, tokens: &TokenPool) -> FilterValue {
 }
 
 // =============================================================================
-// WebSocket Client
+// Timestamp extraction (inlined for speed)
+// =============================================================================
+
+#[inline(always)]
+fn extract_timestamp(pusher_msg: &PusherMessage) -> Option<u64> {
+    // Check root-level tags first
+    if let Some(tags) = &pusher_msg.tags {
+        if let Some(ts) = tags.get("timestamp") {
+            if let Some(v) = ts.as_u64() {
+                return Some(v);
+            }
+            if let Some(s) = ts.as_str() {
+                if let Ok(v) = s.parse::<u64>() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+
+    // Fallback: check inside data
+    if let Some(data) = &pusher_msg.data {
+        if let Some(tags) = data.get("tags") {
+            if let Some(ts) = tags.get("timestamp") {
+                if let Some(v) = ts.as_u64() {
+                    return Some(v);
+                }
+                if let Some(s) = ts.as_str() {
+                    if let Ok(v) = s.parse::<u64>() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        if let Some(ts) = data.get("timestamp") {
+            if let Some(v) = ts.as_u64() {
+                return Some(v);
+            }
+            if let Some(s) = ts.as_str() {
+                if let Ok(v) = s.parse::<u64>() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// =============================================================================
+// WebSocket Client (returns results, no shared locks)
 // =============================================================================
 
 async fn run_client(
     id: usize,
     config: Arc<Config>,
     tokens: TokenPool,
-    metrics: Metrics,
+    live_stats: LiveStats,
     mut shutdown: broadcast::Receiver<()>,
-) -> Result<()> {
+) -> ClientResult {
+    let mut result = ClientResult::new();
+
     let protocol = if config.ws_port == 443 { "wss" } else { "ws" };
     let url = format!(
         "{}://{}:{}/app/{}",
@@ -340,15 +325,19 @@ async fn run_client(
 
     // Connect to WebSocket
     let (ws_stream, _) = match connect_async(&url).await {
-        Ok(result) => result,
+        Ok(r) => r,
         Err(e) => {
             error!("Client {} failed to connect: {}", id, e);
-            metrics.connection_errors.fetch_add(1, Ordering::Relaxed);
-            return Err(e.into());
+            live_stats.connection_errors.fetch_add(1, Ordering::Relaxed);
+            result.connection_error = true;
+            return result;
         }
     };
 
-    metrics.active_connections.fetch_add(1, Ordering::Relaxed);
+    result.connected = true;
+    live_stats
+        .active_connections
+        .fetch_add(1, Ordering::Relaxed);
     debug!("Client {} connected successfully", id);
 
     let (mut write, mut read) = ws_stream.split();
@@ -357,6 +346,7 @@ async fn run_client(
     let mut update_time: Option<Instant> = None;
     let mut subscribed = false;
     let mut is_updating = false;
+    let mut logged_first_message = false;
 
     // Scenario 2: Setup periodic filter updates
     let mut filter_update_timer = if config.scenario == 2 {
@@ -367,12 +357,136 @@ async fn run_client(
         None
     };
 
+    // Pre-serialize pong message
+    let pong_json = sonic_rs::to_string(&PongMessage {
+        event: "pusher:pong".to_string(),
+        data: sonic_rs::json!({}),
+    })
+    .unwrap();
+
     loop {
         tokio::select! {
-            // Handle shutdown signal
+            biased;
+
+            // Handle shutdown signal (high priority)
             _ = shutdown.recv() => {
                 debug!("Client {} received shutdown signal", id);
                 break;
+            }
+
+            // Handle incoming messages (highest throughput path)
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        // Handle raw ping
+                        if text == "ping" {
+                            let _ = write.send(Message::Text("pong".to_string())).await;
+                            continue;
+                        }
+
+                        // Parse Pusher message
+                        let pusher_msg: PusherMessage = match sonic_rs::from_str(&text) {
+                            Ok(msg) => msg,
+                            Err(_) => continue,
+                        };
+
+                        match pusher_msg.event.as_str() {
+                            "pusher:ping" => {
+                                let _ = write.send(Message::Text(pong_json.clone())).await;
+                            }
+
+                            "pusher:connection_established" => {
+                                debug!("Client {} connection established", id);
+                                let filter = build_filter(config.scenario, &tokens);
+                                let subscribe_msg = SubscribeMessage {
+                                    event: "pusher:subscribe".to_string(),
+                                    data: SubscribeData {
+                                        channel: config.channel.clone(),
+                                        filter,
+                                    },
+                                };
+
+                                subscribe_time = Some(Instant::now());
+
+                                if let Ok(json) = sonic_rs::to_string(&subscribe_msg) {
+                                    if let Err(e) = write.send(Message::Text(json)).await {
+                                        error!("Client {} failed to subscribe: {}", id, e);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            "pusher_internal:subscription_succeeded" => {
+                                if is_updating {
+                                    if let Some(start) = update_time {
+                                        result.filter_update_latencies.push(start.elapsed().as_millis() as u64);
+                                    }
+                                    is_updating = false;
+                                } else {
+                                    if let Some(start) = subscribe_time {
+                                        result.subscribe_latency_ms = Some(start.elapsed().as_millis() as u64);
+                                        result.subscribe_success = true;
+                                        live_stats.subscribe_success.fetch_add(1, Ordering::Relaxed);
+                                        subscribed = true;
+                                        debug!("Client {} subscribed successfully", id);
+                                    }
+                                }
+                            }
+
+                            "pusher:error" => {
+                                error!("Client {} subscription error: {:?}", id, pusher_msg.data);
+                            }
+
+                            _ => {
+                                // Channel message - hot path
+                                if subscribed && pusher_msg.channel.as_ref() == Some(&config.channel) {
+                                    result.messages_received += 1;
+                                    live_stats.messages_received.fetch_add(1, Ordering::Relaxed);
+
+                                    // Log first message for debugging
+                                    if !logged_first_message {
+                                        info!("Client {} first message - Event: {}, Tags: {:?}",
+                                            id, pusher_msg.event, pusher_msg.tags);
+                                        logged_first_message = true;
+                                    }
+
+                                    // Extract and record E2E latency
+                                    if let Some(ts) = extract_timestamp(&pusher_msg) {
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_millis() as u64;
+
+                                        let latency = now.saturating_sub(ts);
+
+                                        // Sanity check: ignore if > 60s
+                                        if latency < 60_000 {
+                                            result.e2e_latencies.push(latency);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Some(Ok(Message::Close(_))) => {
+                        debug!("Client {} received close frame", id);
+                        break;
+                    }
+
+                    Some(Err(e)) => {
+                        error!("Client {} WebSocket error: {}", id, e);
+                        result.connection_error = true;
+                        break;
+                    }
+
+                    None => {
+                        debug!("Client {} stream ended", id);
+                        break;
+                    }
+
+                    _ => {}
+                }
             }
 
             // Handle filter updates (Scenario 2)
@@ -403,212 +517,133 @@ async fn run_client(
                     }
                 }
             }
-
-            // Handle incoming messages
-            msg = read.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        // Handle raw ping
-                        if text == "ping" {
-                            if let Err(e) = write.send(Message::Text("pong".to_string())).await {
-                                error!("Client {} failed to send pong: {}", id, e);
-                                break;
-                            }
-                            continue;
-                        }
-
-                        // Parse Pusher message
-                        let pusher_msg: PusherMessage = match sonic_rs::from_str(&text) {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                debug!("Client {} failed to parse message: {} - Raw: {}", id, e, text);
-                                continue;
-                            }
-                        };
-
-                        debug!("Client {} received event: {}", id, pusher_msg.event);
-
-                        match pusher_msg.event.as_str() {
-                            "pusher:ping" => {
-                                let pong = PongMessage {
-                                    event: "pusher:pong".to_string(),
-                                    data: sonic_rs::json!({}),
-                                };
-                                if let Ok(json) = sonic_rs::to_string(&pong) {
-                                    if let Err(e) = write.send(Message::Text(json)).await {
-                                        error!("Client {} failed to send pusher:pong: {}", id, e);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            "pusher:connection_established" => {
-                                debug!("Client {} connection established", id);
-                                let filter = build_filter(config.scenario, &tokens);
-                                let subscribe_msg = SubscribeMessage {
-                                    event: "pusher:subscribe".to_string(),
-                                    data: SubscribeData {
-                                        channel: config.channel.clone(),
-                                        filter,
-                                    },
-                                };
-
-                                subscribe_time = Some(Instant::now());
-
-                                if let Ok(json) = sonic_rs::to_string(&subscribe_msg) {
-                                    if let Err(e) = write.send(Message::Text(json)).await {
-                                        error!("Client {} failed to subscribe: {}", id, e);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            "pusher_internal:subscription_succeeded" => {
-                                if is_updating {
-                                    // Filter update response
-                                    if let Some(start) = update_time {
-                                        let latency = start.elapsed().as_millis() as u64;
-                                        metrics.filter_update_latency.lock().await
-                                            .record(latency)
-                                            .ok();
-                                        metrics.filter_updates.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    is_updating = false;
-                                } else {
-                                    // Initial subscription
-                                    if let Some(start) = subscribe_time {
-                                        let latency = start.elapsed().as_millis() as u64;
-                                        metrics.subscribe_latency.lock().await
-                                            .record(latency)
-                                            .ok();
-                                        metrics.subscribe_success.fetch_add(1, Ordering::Relaxed);
-                                        subscribed = true;
-                                        debug!("Client {} subscribed successfully", id);
-                                    }
-                                }
-                            }
-
-                            "pusher:error" => {
-                                error!("Client {} subscription error: {:?}", id, pusher_msg.data);
-                                metrics.subscribe_failed.fetch_add(1, Ordering::Relaxed);
-                            }
-
-                            _ => {
-                                // Channel message
-                                if subscribed && pusher_msg.channel.as_ref() == Some(&config.channel) {
-                                    metrics.messages_received.fetch_add(1, Ordering::Relaxed);
-
-                                    // Calculate E2E latency
-                                    let mut send_timestamp: Option<u64> = None;
-
-                                    // Debug: Log the message structure for the first few messages
-                                    if metrics.messages_received.load(Ordering::Relaxed) <= 3 {
-                                        info!("Client {} received message - Event: {}, Tags: {:?}, Data: {:?}",
-                                            id, pusher_msg.event, pusher_msg.tags, pusher_msg.data);
-                                    }
-
-                                    // Check root-level tags
-                                    if let Some(tags) = &pusher_msg.tags {
-                                        if let Some(ts) = tags.get("timestamp") {
-                                            // Try as u64 first, then as string
-                                            send_timestamp = ts.as_u64().or_else(|| {
-                                                ts.as_str().and_then(|s| s.parse::<u64>().ok())
-                                            });
-                                            debug!("Client {} found timestamp in root tags: {:?}", id, ts);
-                                        } else {
-                                            debug!("Client {} tags present but no timestamp field. Tags: {:?}", id, tags);
-                                        }
-                                    } else {
-                                        debug!("Client {} no root-level tags", id);
-                                    }
-
-                                    // Fallback: check inside data
-                                    if send_timestamp.is_none() {
-                                        if let Some(data) = &pusher_msg.data {
-                                            if let Some(tags) = data.get("tags") {
-                                                if let Some(ts) = tags.get("timestamp") {
-                                                    // Try as u64 first, then as string
-                                                    send_timestamp = ts.as_u64().or_else(|| {
-                                                        ts.as_str().and_then(|s| s.parse::<u64>().ok())
-                                                    });
-                                                    debug!("Client {} found timestamp in data.tags: {:?}", id, ts);
-                                                }
-                                            } else if let Some(ts) = data.get("timestamp") {
-                                                // Try as u64 first, then as string
-                                                send_timestamp = ts.as_u64().or_else(|| {
-                                                    ts.as_str().and_then(|s| s.parse::<u64>().ok())
-                                                });
-                                                debug!("Client {} found timestamp in data: {:?}", id, ts);
-                                            }
-                                        }
-                                    }
-
-                                    if let Some(ts) = send_timestamp {
-                                        let now = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_millis() as u64;
-
-                                        let latency = now.saturating_sub(ts);
-
-                                        // Sanity check: ignore if > 60s
-                                        if latency < 60_000 {
-                                            metrics.e2e_latency.lock().await
-                                                .record(latency)
-                                                .ok();
-                                            debug!("Client {} recorded E2E latency: {}ms", id, latency);
-                                        } else {
-                                            warn!("Client {} E2E latency too high ({}ms), ignoring", id, latency);
-                                        }
-                                    } else {
-                                        // Only log for first few messages to avoid spam
-                                        if metrics.messages_received.load(Ordering::Relaxed) <= 3 {
-                                            warn!("Client {} no timestamp found in message", id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Some(Ok(Message::Close(_))) => {
-                        debug!("Client {} received close frame", id);
-                        break;
-                    }
-
-                    Some(Err(e)) => {
-                        error!("Client {} WebSocket error: {}", id, e);
-                        metrics.connection_errors.fetch_add(1, Ordering::Relaxed);
-                        break;
-                    }
-
-                    None => {
-                        debug!("Client {} stream ended", id);
-                        break;
-                    }
-
-                    _ => {}
-                }
-            }
         }
     }
 
-    metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
+    live_stats
+        .active_connections
+        .fetch_sub(1, Ordering::Relaxed);
     debug!("Client {} disconnected", id);
 
-    Ok(())
+    result
 }
 
 // =============================================================================
-// Ramping Schedule
+// Aggregate Results
 // =============================================================================
 
-async fn run_ramping_test(config: Arc<Config>, tokens: TokenPool, metrics: Metrics) -> Result<()> {
+fn aggregate_results(results: Vec<ClientResult>) {
+    let mut subscribe_hist = Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap();
+    let mut filter_hist = Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap();
+    let mut e2e_hist = Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap();
+
+    let mut total_messages: u64 = 0;
+    let mut subscribe_success: u64 = 0;
+    let mut subscribe_failed: u64 = 0;
+    let mut connection_errors: u64 = 0;
+    let mut filter_updates: u64 = 0;
+
+    for r in results {
+        total_messages += r.messages_received;
+
+        if r.connection_error {
+            connection_errors += 1;
+        } else if r.subscribe_success {
+            subscribe_success += 1;
+            if let Some(lat) = r.subscribe_latency_ms {
+                let _ = subscribe_hist.record(lat);
+            }
+        } else if r.connected {
+            subscribe_failed += 1;
+        } else {
+            connection_errors += 1;
+        }
+
+        for lat in r.filter_update_latencies {
+            let _ = filter_hist.record(lat);
+            filter_updates += 1;
+        }
+
+        for lat in r.e2e_latencies {
+            let _ = e2e_hist.record(lat);
+        }
+    }
+
+    info!("╔════════════════════════════════════════════════════════════╗");
+    info!("║                    BENCHMARK SUMMARY                       ║");
+    info!("╚════════════════════════════════════════════════════════════╝");
+
+    info!("");
+    info!("Connection Metrics:");
+    info!("  Subscribe Success:   {}", subscribe_success);
+    info!("  Subscribe Failed:    {}", subscribe_failed);
+    info!("  Connection Errors:   {}", connection_errors);
+    info!("  Filter Updates:      {}", filter_updates);
+    info!("  Messages Received:   {}", total_messages);
+
+    info!("");
+    info!("Subscribe Latency (ms):");
+    if subscribe_hist.len() > 0 {
+        info!("  Min:    {}", subscribe_hist.min());
+        info!("  Mean:   {:.2}", subscribe_hist.mean());
+        info!("  p50:    {}", subscribe_hist.value_at_quantile(0.50));
+        info!("  p95:    {}", subscribe_hist.value_at_quantile(0.95));
+        info!("  p99:    {}", subscribe_hist.value_at_quantile(0.99));
+        info!("  Max:    {}", subscribe_hist.max());
+    } else {
+        info!("  No data");
+    }
+
+    if filter_hist.len() > 0 {
+        info!("");
+        info!("Filter Update Latency (ms):");
+        info!("  Min:    {}", filter_hist.min());
+        info!("  Mean:   {:.2}", filter_hist.mean());
+        info!("  p50:    {}", filter_hist.value_at_quantile(0.50));
+        info!("  p95:    {}", filter_hist.value_at_quantile(0.95));
+        info!("  p99:    {}", filter_hist.value_at_quantile(0.99));
+        info!("  Max:    {}", filter_hist.max());
+    }
+
+    info!("");
+    info!("End-to-End Latency (ms):");
+    if e2e_hist.len() > 0 {
+        info!("  Min:    {}", e2e_hist.min());
+        info!("  Mean:   {:.2}", e2e_hist.mean());
+        info!("  p50:    {}", e2e_hist.value_at_quantile(0.50));
+        info!("  p95:    {}", e2e_hist.value_at_quantile(0.95));
+        info!("  p99:    {}", e2e_hist.value_at_quantile(0.99));
+        info!("  Max:    {}", e2e_hist.max());
+        info!("  Samples:{}", e2e_hist.len());
+    } else {
+        info!("  No data");
+    }
+
+    info!("");
+    info!("════════════════════════════════════════════════════════════");
+    info!("                  BENCHMARK COMPLETE");
+    info!("════════════════════════════════════════════════════════════");
+}
+
+// =============================================================================
+// Test Runner
+// =============================================================================
+
+async fn run_ramping_test(
+    config: Arc<Config>,
+    tokens: TokenPool,
+    live_stats: LiveStats,
+) -> Result<Vec<ClientResult>> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let mut tasks = Vec::new();
+    let mut tasks = Vec::with_capacity(config.num_clients);
 
     info!("Starting ramping test");
-    info!("Target: {} clients", config.num_clients);
+    info!(
+        "Target: {} clients (IDs {}-{})",
+        config.num_clients,
+        config.client_id_offset,
+        config.client_id_offset + config.num_clients - 1
+    );
 
     // Stage 1: Ramp up to target clients
     let stage_start = Instant::now();
@@ -628,33 +663,26 @@ async fn run_ramping_test(config: Arc<Config>, tokens: TokenPool, metrics: Metri
         while spawned < target_now {
             let client_config = Arc::clone(&config);
             let client_tokens = tokens.clone();
-            let client_metrics = metrics.clone();
+            let client_stats = live_stats.clone();
             let shutdown_rx = shutdown_tx.subscribe();
 
-            let id = spawned;
+            let id = config.client_id_offset + spawned;
             spawned += 1;
 
             let task = tokio::spawn(async move {
-                run_client(
-                    id,
-                    client_config,
-                    client_tokens,
-                    client_metrics,
-                    shutdown_rx,
-                )
-                .await
+                run_client(id, client_config, client_tokens, client_stats, shutdown_rx).await
             });
 
             tasks.push(task);
         }
 
         // Sleep a bit before checking again
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(50)).await;
 
         // Log progress every 5 seconds
         if last_log.elapsed() >= Duration::from_secs(5) {
-            let active = metrics.active_connections.load(Ordering::Relaxed);
-            let received = metrics.messages_received.load(Ordering::Relaxed);
+            let active = live_stats.active_connections.load(Ordering::Relaxed);
+            let received = live_stats.messages_received.load(Ordering::Relaxed);
             info!(
                 "Stage 1: spawned={}, active={}, messages_received={}",
                 spawned, active, received
@@ -674,7 +702,7 @@ async fn run_ramping_test(config: Arc<Config>, tokens: TokenPool, metrics: Metri
     info!(
         "Stage 1 complete: {} clients spawned, {} active",
         spawned,
-        metrics.active_connections.load(Ordering::Relaxed)
+        live_stats.active_connections.load(Ordering::Relaxed)
     );
 
     // Stage 2: Hold at target
@@ -691,121 +719,105 @@ async fn run_ramping_test(config: Arc<Config>, tokens: TokenPool, metrics: Metri
         sleep(Duration::from_millis(500)).await;
 
         if last_log.elapsed() >= hold_interval {
-            let active = metrics.active_connections.load(Ordering::Relaxed);
-            let received = metrics.messages_received.load(Ordering::Relaxed);
-            info!("Stage 2: active={}, messages_received={}", active, received);
+            let active = live_stats.active_connections.load(Ordering::Relaxed);
+            let received = live_stats.messages_received.load(Ordering::Relaxed);
+            let success = live_stats.subscribe_success.load(Ordering::Relaxed);
+            let errors = live_stats.connection_errors.load(Ordering::Relaxed);
+            info!(
+                "Stage 2: active={}, subscribed={}, errors={}, messages={}",
+                active, success, errors, received
+            );
             last_log = Instant::now();
         }
     }
 
     info!(
         "Stage 2 complete: {} active",
-        metrics.active_connections.load(Ordering::Relaxed)
+        live_stats.active_connections.load(Ordering::Relaxed)
     );
 
     // Stage 3: Ramp down
     info!("Stage 3: ramping down over {}s", config.ramp_down_duration);
 
     // Signal shutdown to all clients
-    shutdown_tx.send(()).ok();
+    let _ = shutdown_tx.send(());
 
-    // Wait for graceful shutdown
-    info!("Waiting for graceful shutdown (max 30s)");
-    tokio::select! {
-        _ = sleep(Duration::from_secs(30)) => {
-            info!("Graceful shutdown timeout reached");
-        }
-        _ = async {
-            futures_util::future::join_all(tasks).await;
-        } => {
-            info!("All tasks completed before timeout");
+    // Collect all results
+    info!("Collecting results from all clients...");
+    let mut results = Vec::with_capacity(tasks.len());
+
+    for task in tasks {
+        match tokio::time::timeout(Duration::from_secs(10), task).await {
+            Ok(Ok(result)) => results.push(result),
+            Ok(Err(e)) => {
+                warn!("Task join error: {}", e);
+                results.push(ClientResult::new());
+            }
+            Err(_) => {
+                warn!("Task timed out during collection");
+                results.push(ClientResult::new());
+            }
         }
     }
 
     info!(
         "Stage 3 complete: {} active",
-        metrics.active_connections.load(Ordering::Relaxed)
+        live_stats.active_connections.load(Ordering::Relaxed)
     );
 
-    Ok(())
+    Ok(results)
 }
 
 // =============================================================================
 // Main
 // =============================================================================
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("ws_benchmark=info".parse().unwrap()),
         )
         .init();
 
     let config = Arc::new(Config::parse());
 
-    // Print banner
     info!("════════════════════════════════════════════════════════════");
-    info!("           TAG FILTERING BENCHMARK (Rust)");
+    info!("              WebSocket Benchmark v2.0 (Lock-Free)");
     info!("════════════════════════════════════════════════════════════");
-    info!("Scenario: {}", config.scenario);
-    info!("Target Clients: {}", config.num_clients);
-    info!("Ramp Duration: {}s", config.ramp_duration);
-    info!("Hold Duration: {}s", config.hold_duration);
-    info!(
-        "WebSocket: {}://{}:{}",
-        if config.ws_port == 443 { "wss" } else { "ws" },
-        config.ws_host,
-        config.ws_port
-    );
-    info!("Channel: {}", config.channel);
-
-    let scenario_descriptions = [
-        "Single random token_address per client (eq)",
-        "Single token + periodic filter UPDATES",
-        "10 random token_addresses per client (IN)",
-        "100 random token_addresses per client (IN)",
-        "500 random token_addresses per client (IN)",
-    ];
-
-    if config.scenario >= 1 && config.scenario <= 5 {
-        info!(
-            "Description: {}",
-            scenario_descriptions[config.scenario as usize - 1]
-        );
-    }
-
-    if config.scenario == 2 {
-        info!(
-            "Filter update interval: {}ms",
-            config.filter_update_interval
-        );
-    }
+    info!("");
+    info!("Configuration:");
+    info!("  Host:           {}:{}", config.ws_host, config.ws_port);
+    info!("  App Key:        {}", config.app_key);
+    info!("  Channel:        {}", config.channel);
+    info!("  Scenario:       {}", config.scenario);
+    info!("  Num Clients:    {}", config.num_clients);
+    info!("  Client Offset:  {}", config.client_id_offset);
+    info!("  Ramp Duration:  {}s", config.ramp_duration);
+    info!("  Hold Duration:  {}s", config.hold_duration);
+    info!("");
 
     // Load tokens
     let tokens = if config.token_file.exists() {
         TokenPool::load_from_file(&config.token_file)?
     } else {
-        TokenPool::generate_fake(10_000)
+        warn!(
+            "Token file not found: {:?}, generating fake tokens",
+            config.token_file
+        );
+        TokenPool::generate_fake(10000)
     };
 
-    info!("Token addresses: {}", tokens.addresses.len());
-    info!("════════════════════════════════════════════════════════════");
+    // Create live stats
+    let live_stats = LiveStats::new();
 
-    // Initialize metrics
-    let metrics = Metrics::new();
+    // Run the test and collect results
+    let results = run_ramping_test(config, tokens, live_stats).await?;
 
-    // Run test
-    run_ramping_test(Arc::clone(&config), tokens, metrics.clone()).await?;
-
-    // Print summary
-    metrics.print_summary().await;
-
-    info!("════════════════════════════════════════════════════════════");
-    info!("                 BENCHMARK COMPLETE");
-    info!("════════════════════════════════════════════════════════════");
+    // Aggregate and print results (single-threaded, after all clients done)
+    aggregate_results(results);
 
     Ok(())
 }
