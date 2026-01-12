@@ -69,6 +69,10 @@ struct Config {
     /// Client ID offset for multi-machine benchmarking
     #[arg(long, env = "CLIENT_ID_OFFSET", default_value = "0")]
     client_id_offset: usize,
+
+    /// Warm-up duration in seconds (metrics discarded during this phase)
+    #[arg(long, env = "WARMUP_DURATION", default_value = "0")]
+    warmup_duration: u64,
 }
 
 // =============================================================================
@@ -128,6 +132,7 @@ struct ClientResult {
     filter_update_latencies: Vec<u64>,
     e2e_latencies: Vec<u64>,
     messages_received: u64,
+    messages_received_during_warmup: u64,
     connected: bool,
     subscribe_success: bool,
     connection_error: bool,
@@ -140,6 +145,7 @@ impl ClientResult {
             filter_update_latencies: Vec::with_capacity(64),
             e2e_latencies: Vec::with_capacity(10000),
             messages_received: 0,
+            messages_received_during_warmup: 0,
             connected: false,
             subscribe_success: false,
             connection_error: false,
@@ -157,6 +163,7 @@ struct LiveStats {
     messages_received: Arc<AtomicU64>,
     subscribe_success: Arc<AtomicU64>,
     connection_errors: Arc<AtomicU64>,
+    warmup_complete: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LiveStats {
@@ -166,6 +173,7 @@ impl LiveStats {
             messages_received: Arc::new(AtomicU64::new(0)),
             subscribe_success: Arc::new(AtomicU64::new(0)),
             connection_errors: Arc::new(AtomicU64::new(0)),
+            warmup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -315,6 +323,9 @@ async fn run_client(
 ) -> ClientResult {
     let mut result = ClientResult::new();
 
+    // Check if we should record metrics (after warmup)
+    let should_record = || live_stats.warmup_complete.load(Ordering::Relaxed);
+
     let protocol = if config.ws_port == 443 { "wss" } else { "ws" };
     let url = format!(
         "{}://{}:{}/app/{}",
@@ -419,7 +430,9 @@ async fn run_client(
                             "pusher_internal:subscription_succeeded" => {
                                 if is_updating {
                                     if let Some(start) = update_time {
-                                        result.filter_update_latencies.push(start.elapsed().as_millis() as u64);
+                                        if should_record() {
+                                            result.filter_update_latencies.push(start.elapsed().as_millis() as u64);
+                                        }
                                     }
                                     is_updating = false;
                                 } else {
@@ -440,7 +453,6 @@ async fn run_client(
                             _ => {
                                 // Channel message - hot path
                                 if subscribed && pusher_msg.channel.as_ref() == Some(&config.channel) {
-                                    result.messages_received += 1;
                                     live_stats.messages_received.fetch_add(1, Ordering::Relaxed);
 
                                     // Log first message for debugging
@@ -450,19 +462,26 @@ async fn run_client(
                                         logged_first_message = true;
                                     }
 
-                                    // Extract and record E2E latency
-                                    if let Some(ts) = extract_timestamp(&pusher_msg) {
-                                        let now = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_millis() as u64;
+                                    // Only record metrics after warmup
+                                    if should_record() {
+                                        result.messages_received += 1;
 
-                                        let latency = now.saturating_sub(ts);
+                                        // Extract and record E2E latency
+                                        if let Some(ts) = extract_timestamp(&pusher_msg) {
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_millis() as u64;
 
-                                        // Sanity check: ignore if > 60s
-                                        if latency < 60_000 {
-                                            result.e2e_latencies.push(latency);
+                                            let latency = now.saturating_sub(ts);
+
+                                            // Sanity check: ignore if > 60s
+                                            if latency < 60_000 {
+                                                result.e2e_latencies.push(latency);
+                                            }
                                         }
+                                    } else {
+                                        result.messages_received_during_warmup += 1;
                                     }
                                 }
                             }
@@ -705,12 +724,40 @@ async fn run_ramping_test(
         live_stats.active_connections.load(Ordering::Relaxed)
     );
 
-    // Stage 2: Hold at target
+    // Stage 2: Warm-up phase (if configured)
+    if config.warmup_duration > 0 {
+        let stage_start = Instant::now();
+        info!(
+            "Stage 2: warming up for {}s (metrics discarded)",
+            config.warmup_duration
+        );
+
+        let warmup_interval = Duration::from_secs(5);
+        let mut last_log = Instant::now();
+
+        while stage_start.elapsed() < Duration::from_secs(config.warmup_duration) {
+            sleep(Duration::from_millis(500)).await;
+
+            if last_log.elapsed() >= warmup_interval {
+                let active = live_stats.active_connections.load(Ordering::Relaxed);
+                let received = live_stats.messages_received.load(Ordering::Relaxed);
+                info!(
+                    "Warm-up: active={}, messages={} (discarding)",
+                    active, received
+                );
+                last_log = Instant::now();
+            }
+        }
+
+        info!("Warm-up complete, starting measurement phase");
+    }
+
+    // Mark warmup as complete - start recording metrics
+    live_stats.warmup_complete.store(true, Ordering::Relaxed);
+
+    // Stage 3: Hold at target (measurement phase)
     let stage_start = Instant::now();
-    info!(
-        "Stage 2: holding at {} clients for {}s",
-        config.num_clients, config.hold_duration
-    );
+    info!("Stage 3: measuring for {}s", config.hold_duration);
 
     let hold_interval = Duration::from_secs(5);
     let mut last_log = Instant::now();
@@ -724,7 +771,7 @@ async fn run_ramping_test(
             let success = live_stats.subscribe_success.load(Ordering::Relaxed);
             let errors = live_stats.connection_errors.load(Ordering::Relaxed);
             info!(
-                "Stage 2: active={}, subscribed={}, errors={}, messages={}",
+                "Stage 3: active={}, subscribed={}, errors={}, messages={}",
                 active, success, errors, received
             );
             last_log = Instant::now();
@@ -732,12 +779,12 @@ async fn run_ramping_test(
     }
 
     info!(
-        "Stage 2 complete: {} active",
+        "Stage 4 complete: {} active",
         live_stats.active_connections.load(Ordering::Relaxed)
     );
 
-    // Stage 3: Ramp down
-    info!("Stage 3: ramping down over {}s", config.ramp_down_duration);
+    // Stage 4: Ramp down
+    info!("Stage 4: ramping down over {}s", config.ramp_down_duration);
 
     // Signal shutdown to all clients
     let _ = shutdown_tx.send(());
@@ -796,6 +843,7 @@ async fn main() -> Result<()> {
     info!("  Num Clients:    {}", config.num_clients);
     info!("  Client Offset:  {}", config.client_id_offset);
     info!("  Ramp Duration:  {}s", config.ramp_duration);
+    info!("  Warmup Duration:{}s", config.warmup_duration);
     info!("  Hold Duration:  {}s", config.hold_duration);
     info!("");
 
